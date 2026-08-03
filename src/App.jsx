@@ -16,6 +16,8 @@ const COMPETITIONS = [
   { code: "BL1", name: "Bundesliga" },
   { code: "FL1", name: "Ligue 1" },
   { code: "CL", name: "Champions League" },
+  { code: "DED", name: "Eredivisie" },
+  { code: "BSA", name: "Brazil Serie A" },
 ];
 
 // ---------------------------------------------
@@ -27,7 +29,12 @@ function computeConfidence(homeTeam, awayTeam, standings) {
   const away = findTeam(awayTeam.id);
 
   if (!home || !away) {
-    return { home: 33, draw: 34, away: 33, basis: "insufficient-data" };
+    return {
+      home: 33, draw: 34, away: 33, basis: "insufficient-data",
+      over15: 50, over25: 50,
+      homeScores: 50, awayScores: 50,
+      dc: { homeDraw: 66, drawAway: 66, homeAway: 66 },
+    };
   }
 
   const totalTeams = standings.length;
@@ -54,12 +61,49 @@ function computeConfidence(homeTeam, awayTeam, standings) {
   const away_pct = Math.round((awayScore / total) * 100);
   const draw_pct = 100 - home_pct - away_pct;
 
+  // --- Goals-based markets, from average goals scored/conceded per game ---
+  const homeGFpg = home.goalsFor / Math.max(home.playedGames, 1);
+  const homeGApg = home.goalsAgainst / Math.max(home.playedGames, 1);
+  const awayGFpg = away.goalsFor / Math.max(away.playedGames, 1);
+  const awayGApg = away.goalsAgainst / Math.max(away.playedGames, 1);
+
+  const expectedHomeGoals = (homeGFpg + awayGApg) / 2;
+  const expectedAwayGoals = (awayGFpg + homeGApg) / 2;
+  const expectedTotalGoals = expectedHomeGoals + expectedAwayGoals;
+
+  // Over 1.5 — most matches clear this, so curve sits higher and narrower
+  const over15Raw = 50 + (expectedTotalGoals - 1.5) * 26;
+  const over15 = Math.round(Math.min(Math.max(over15Raw, 30), 95));
+
+  // Over 2.5 — the classic line, centered right on 2.5
+  const over25Raw = 50 + (expectedTotalGoals - 2.5) * 22;
+  const over25 = Math.round(Math.min(Math.max(over25Raw, 12), 88));
+
+  // Team to score over 0.5 (i.e. scores at least once) — driven by that team's expected goals
+  const homeScoresRaw = 50 + (expectedHomeGoals - 0.9) * 35;
+  const homeScores = Math.round(Math.min(Math.max(homeScoresRaw, 25), 95));
+  const awayScoresRaw = 50 + (expectedAwayGoals - 0.9) * 35;
+  const awayScores = Math.round(Math.min(Math.max(awayScoresRaw, 25), 95));
+
+  // Double chance — direct sums of the 1X2 read, capped just under 100
+  const dc = {
+    homeDraw: Math.min(home_pct + draw_pct, 97),
+    drawAway: Math.min(draw_pct + away_pct, 97),
+    homeAway: Math.min(home_pct + away_pct, 97),
+  };
+
   return {
     home: home_pct,
     draw: draw_pct,
     away: away_pct,
     homePosition: home.position,
     awayPosition: away.position,
+    over15,
+    over25,
+    homeScores,
+    awayScores,
+    dc,
+    expectedTotalGoals: expectedTotalGoals.toFixed(1),
   };
 }
 
@@ -67,9 +111,7 @@ function readLabel(pct) {
   if (pct >= 55) return { label: "Strong lean", tone: "strong" };
   if (pct >= 40) return { label: "Moderate lean", tone: "moderate" };
   return { label: "Weak lean", tone: "weak" };
-}
-
-// ---------------------------------------------
+}// ---------------------------------------------
 // UI PRIMITIVES
 // ---------------------------------------------
 
@@ -132,12 +174,27 @@ function MatchCard({ match, standings }) {
       {expanded && conf && (
         <div className="match-detail">
           <div className="detail-divider" />
+          <div className="market-label">Match result</div>
           <ConfidenceBar label="Home win" sublabel={match.homeTeam.shortName} pct={conf.home} accent="#C9A227" />
           <ConfidenceBar label="Draw" sublabel="Split outcome" pct={conf.draw} accent="#8A9490" />
           <ConfidenceBar label="Away win" sublabel={match.awayTeam.shortName} pct={conf.away} accent="#B4483C" />
+
+          <div className="market-label">Goals{conf.expectedTotalGoals ? ` · ~${conf.expectedTotalGoals} expected` : ""}</div>
+          <ConfidenceBar label="Over 1.5" sublabel="Combined goals" pct={conf.over15} accent="#C9A227" />
+          <ConfidenceBar label="Over 2.5" sublabel="Combined goals" pct={conf.over25} accent="#C9A227" />
+
+          <div className="market-label">Team to score (Over 0.5)</div>
+          <ConfidenceBar label={`${match.homeTeam.shortName} to score`} sublabel="At least 1 goal" pct={conf.homeScores} accent="#C9A227" />
+          <ConfidenceBar label={`${match.awayTeam.shortName} to score`} sublabel="At least 1 goal" pct={conf.awayScores} accent="#B4483C" />
+
+          <div className="market-label">Double chance</div>
+          <ConfidenceBar label="Home or Draw" sublabel="1X" pct={conf.dc.homeDraw} accent="#C9A227" />
+          <ConfidenceBar label="Draw or Away" sublabel="X2" pct={conf.dc.drawAway} accent="#8A9490" />
+          <ConfidenceBar label="Home or Away" sublabel="12" pct={conf.dc.homeAway} accent="#B4483C" />
+
           <div className="disclaimer">
             <AlertCircle size={13} />
-            Read from league position and goal-difference form. Not betting advice — verify against your own market before staking.
+            Read from league position and goal-scoring form. Not betting advice — verify against your own market before staking.
           </div>
         </div>
       )}
@@ -145,9 +202,7 @@ function MatchCard({ match, standings }) {
       <div className="expand-hint">{expanded ? "Tap to collapse" : "Tap for match read"}</div>
     </div>
   );
-}
-
-// ---------------------------------------------
+}// ---------------------------------------------
 // MAIN APP
 // ---------------------------------------------
 
@@ -158,10 +213,12 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [usingLastSeason, setUsingLastSeason] = useState(false);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setUsingLastSeason(false);
     try {
       const [matchesRes, standingsRes] = await Promise.all([
         fetch(`${API_BASE}?competition=${competition}&type=matches`),
@@ -169,18 +226,30 @@ export default function App() {
       ]);
 
       const matchesJson = await matchesRes.json();
-      const standingsJson = await standingsRes.json();
+      let standingsJson = await standingsRes.json();
 
       if (matchesJson.error === "rate-limit" || standingsJson.error === "rate-limit") {
         throw new Error("rate-limit");
       }
-      if (matchesJson.error || standingsJson.error) {
+      if (matchesJson.error) {
         throw new Error("fetch-failed");
       }
 
-      const table = standingsJson.standings?.find((s) => s.type === "TOTAL")?.table || [];
+      let table = standingsJson.standings?.find((s) => s.type === "TOTAL")?.table || [];
 
-      setMatches((matchesJson.matches || []).slice(0, 15));
+      const noGamesPlayedYet = table.length > 0 && table.every((t) => t.playedGames === 0);
+      if (table.length === 0 || noGamesPlayedYet) {
+        const lastYear = new Date().getFullYear() - 1;
+        const fallbackRes = await fetch(`${API_BASE}?competition=${competition}&type=standings&season=${lastYear}`);
+        const fallbackJson = await fallbackRes.json();
+        const fallbackTable = fallbackJson.standings?.find((s) => s.type === "TOTAL")?.table || [];
+        if (fallbackTable.length > 0) {
+          table = fallbackTable;
+          setUsingLastSeason(true);
+        }
+      }
+
+      setMatches((matchesJson.matches || []).slice(0, 30));
       setStandings(table);
       setLastUpdated(new Date());
     } catch (e) {
@@ -224,6 +293,12 @@ export default function App() {
       </div>
 
       <main className="app-main">
+        {usingLastSeason && matches.length > 0 && (
+          <div className="season-note">
+            New season hasn't kicked off yet — reads are based on last season's final form.
+          </div>
+        )}
+
         {loading && matches.length === 0 && (
           <div className="state-card">
             <RefreshCw size={20} className="spin" />
@@ -270,298 +345,3 @@ export default function App() {
     </div>
   );
 }
-
-// ---------------------------------------------
-// STYLES
-// ---------------------------------------------
-const STYLES = `
-@import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500&display=swap');
-
-* { box-sizing: border-box; }
-
-.app-root {
-  min-height: 100vh;
-  background: #0D1210;
-  color: #E8EDE9;
-  font-family: 'Inter', sans-serif;
-  padding-bottom: 40px;
-}
-
-.app-header {
-  padding: 20px 18px 14px;
-  border-bottom: 1px solid #1D2621;
-}
-
-.header-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.brand-icon { color: #C9A227; }
-
-.brand-name {
-  font-family: 'Oswald', sans-serif;
-  font-weight: 700;
-  font-size: 20px;
-  letter-spacing: 0.04em;
-}
-
-.refresh-btn {
-  background: #171F1A;
-  border: 1px solid #2A342E;
-  color: #E8EDE9;
-  width: 34px;
-  height: 34px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-.refresh-btn:disabled { opacity: 0.5; }
-
-.spin { animation: spin 1s linear infinite; }
-@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-
-.tagline {
-  margin: 6px 0 0;
-  font-size: 12.5px;
-  color: #8A9490;
-  font-family: 'IBM Plex Mono', monospace;
-}
-
-.comp-tabs {
-  display: flex;
-  gap: 6px;
-  padding: 12px 16px;
-  overflow-x: auto;
-  border-bottom: 1px solid #1D2621;
-}
-.comp-tabs::-webkit-scrollbar { display: none; }
-
-.comp-tab {
-  flex-shrink: 0;
-  background: transparent;
-  border: 1px solid #2A342E;
-  color: #8A9490;
-  padding: 7px 13px;
-  border-radius: 20px;
-  font-size: 12.5px;
-  font-family: 'Inter', sans-serif;
-  font-weight: 500;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.comp-tab.active {
-  background: #C9A227;
-  border-color: #C9A227;
-  color: #0D1210;
-  font-weight: 600;
-}
-
-.app-main {
-  padding: 16px;
-}
-
-.state-card {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  background: #171F1A;
-  border: 1px solid #2A342E;
-  border-radius: 10px;
-  padding: 16px;
-  color: #8A9490;
-  font-size: 13.5px;
-  line-height: 1.5;
-}
-.state-card code {
-  background: #0D1210;
-  padding: 2px 5px;
-  border-radius: 4px;
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 12px;
-  color: #C9A227;
-}
-
-.match-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.match-card {
-  background: #131A15;
-  border: 1px solid #212B24;
-  border-radius: 12px;
-  padding: 14px;
-  cursor: pointer;
-  transition: border-color 0.15s ease;
-}
-.match-card:active { border-color: #C9A227; }
-
-.match-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 10px;
-}
-
-.match-date {
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 11px;
-  color: #6B7570;
-  letter-spacing: 0.03em;
-}
-
-.match-status {
-  font-size: 10px;
-  font-family: 'IBM Plex Mono', monospace;
-  padding: 2px 8px;
-  border-radius: 10px;
-  background: #1D2621;
-  color: #8A9490;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.match-teams {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.team {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1;
-}
-.team-away { align-items: flex-end; text-align: right; }
-
-.team-name {
-  font-family: 'Oswald', sans-serif;
-  font-weight: 600;
-  font-size: 16px;
-}
-
-.team-pos {
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 10.5px;
-  color: #6B7570;
-}
-
-.vs {
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 11px;
-  color: #4A5450;
-  padding: 0 10px;
-}
-
-.match-detail { margin-top: 6px; }
-
-.detail-divider {
-  height: 1px;
-  background: #212B24;
-  margin: 12px 0 14px;
-}
-
-.conf-row { margin-bottom: 14px; }
-.conf-row:last-of-type { margin-bottom: 10px; }
-
-.conf-row-head {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 5px;
-}
-
-.conf-label {
-  font-size: 12.5px;
-  font-weight: 500;
-  color: #C7D0CB;
-}
-
-.conf-pct {
-  font-family: 'IBM Plex Mono', monospace;
-  font-weight: 500;
-  font-size: 13px;
-}
-
-.conf-track {
-  position: relative;
-  height: 6px;
-  background: #1D2621;
-  border-radius: 3px;
-  overflow: visible;
-  margin-bottom: 4px;
-}
-
-.conf-fill {
-  height: 100%;
-  border-radius: 3px;
-  transition: width 0.4s ease;
-}
-
-.conf-ticks {
-  position: absolute;
-  top: -2px;
-  left: 0;
-  right: 0;
-  height: 10px;
-}
-.tick {
-  position: absolute;
-  width: 1px;
-  height: 10px;
-  background: rgba(232, 237, 233, 0.08);
-}
-
-.conf-sub {
-  font-size: 10.5px;
-  color: #6B7570;
-  font-family: 'IBM Plex Mono', monospace;
-}
-
-.read-tag { font-weight: 500; }
-.read-strong { color: #C9A227; }
-.read-moderate { color: #8A9490; }
-.read-weak { color: #6B7570; }
-
-.disclaimer {
-  display: flex;
-  gap: 6px;
-  align-items: flex-start;
-  font-size: 10.5px;
-  color: #6B7570;
-  line-height: 1.4;
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: 1px dashed #212B24;
-}
-.disclaimer svg { flex-shrink: 0; margin-top: 1px; }
-
-.expand-hint {
-  text-align: center;
-  font-size: 10px;
-  color: #4A5450;
-  font-family: 'IBM Plex Mono', monospace;
-  margin-top: 10px;
-  letter-spacing: 0.04em;
-}
-
-.app-footer {
-  text-align: center;
-  font-size: 10.5px;
-  color: #4A5450;
-  font-family: 'IBM Plex Mono', monospace;
-  padding-top: 20px;
-}
-`;
