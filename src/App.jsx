@@ -111,7 +111,8 @@ function readLabel(pct) {
   if (pct >= 55) return { label: "Strong lean", tone: "strong" };
   if (pct >= 40) return { label: "Moderate lean", tone: "moderate" };
   return { label: "Weak lean", tone: "weak" };
-}// ---------------------------------------------
+} Now paste Part 2 right after what you just added (cursor should already be at the end — if not, tap at the very end of the pasted text first):
+// ---------------------------------------------
 // UI PRIMITIVES
 // ---------------------------------------------
 
@@ -202,7 +203,7 @@ function MatchCard({ match, standings }) {
       <div className="expand-hint">{expanded ? "Tap to collapse" : "Tap for match read"}</div>
     </div>
   );
-}// ---------------------------------------------
+} // ---------------------------------------------
 // MAIN APP
 // ---------------------------------------------
 
